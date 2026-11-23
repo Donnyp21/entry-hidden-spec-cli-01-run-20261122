@@ -791,9 +791,41 @@ function run(args: string[]): { code: number; out: string[] } {
     }
   }
   if (fails.length > 0) return { code: 1, out: [...fails.map((f) => `error: ${f.code} ${f.path}`), `failed: ${fails.length} of ${edits.length} edits`] };
-  const movePairs = tree.moves.filter(([o, n]) => tree.original(o) !== null && tree.get(o) === null && tree.original(n) === null && tree.get(n) !== null);
-  const movedOld = new Set(movePairs.map(([o]) => o));
-  const movedNew = new Set(movePairs.map(([, n]) => n));
+  // R lines follow whole move chains (SPEC section 2): a file moved A -> B -> C
+  // in one patch is reported once, R A -> C, not as D A + A C. A chain starts at
+  // a path that existed before the patch and ends at a path that did not; the
+  // middle paths existed neither before nor after, so they list nothing.
+  const moveTo = new Map<string, string>();
+  for (const [o, n] of tree.moves) moveTo.set(o, n);
+  const movePairs: Array<[string, string]> = [];
+  const movedOld = new Set<string>();
+  const movedNew = new Set<string>();
+  for (const s of [...tree.now.keys()]) {
+    if (tree.original(s) === null || tree.get(s) !== null || !moveTo.has(s)) continue;
+    const chain: string[] = [s];
+    let cur = s;
+    let end: string | null = null;
+    while (moveTo.has(cur)) {
+      const nxt = moveTo.get(cur)!;
+      if (tree.get(nxt) !== null && tree.original(nxt) === null) {
+        end = nxt;
+        break;
+      }
+      if (tree.get(nxt) === null && tree.original(nxt) === null) {
+        chain.push(nxt);
+        cur = nxt;
+        continue;
+      }
+      break;
+    }
+    if (end === null) continue;
+    movePairs.push([s, end]);
+    for (const p of chain) {
+      movedOld.add(p);
+      movedNew.add(p);
+    }
+    movedNew.add(end);
+  }
   const rows: { key: string; text: string }[] = [];
   for (const p of [...tree.now.keys()].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
     const was = tree.original(p);
